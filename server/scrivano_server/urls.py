@@ -5,7 +5,7 @@ from rest_framework.routers import DefaultRouter
 from groups.api import GroupViewSet
 from groups.context_api import GroupContextViewSet
 from groups.documents_api import GroupDocumentViewSet
-from chat.api import MeetingChatViewSet
+from chat.api import GroupChatViewSet, MeetingChatViewSet
 from memory.api import (
     ConflictResolveViewSet,
     GroupMemoryViewSet,
@@ -45,6 +45,9 @@ urlpatterns = [
         MeetingMemorySuggestionViewSet.as_view({"get": "list", "post": "create"}),
     ),
     path("api/groups/<uuid:group_pk>/memory/", GroupMemoryViewSet.as_view({"get": "list"})),
+    path("api/groups/<uuid:group_pk>/chat/", GroupChatViewSet.as_view({"get": "list"})),
+    path("api/groups/<uuid:group_pk>/chat/ask/", GroupChatViewSet.as_view({"post": "ask"})),
+    path("api/groups/<uuid:group_pk>/chat/answer/", GroupChatViewSet.as_view({"post": "answer"})),
     path("api/groups/<uuid:group_pk>/memory/review/", GroupMemoryViewSet.as_view({"get": "review"})),
     path("api/memory-suggestions/<uuid:pk>/resolve/", SuggestionResolveViewSet.as_view({"post": "resolve"})),
     path("api/memory/<uuid:pk>/history/", MemoryHistoryViewSet.as_view({"get": "history"})),

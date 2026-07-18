@@ -16,8 +16,15 @@ from rest_framework import serializers, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
+from groups.models import Group
 from meetings.models import Meeting
-from .models import MeetingChatMessage, MeetingChatThread
+from .group_retrieval import retrieve_group_sources, valid_group_citation_ids
+from .models import (
+    GroupChatMessage,
+    GroupChatThread,
+    MeetingChatMessage,
+    MeetingChatThread,
+)
 from .retrieval import retrieve_meeting_segments
 
 
@@ -137,3 +144,118 @@ class MeetingChatViewSet(viewsets.ViewSet):
             not_found=not_found,
         )
         return Response(MessageSerializer(msg).data)
+
+
+class GroupCitationSerializer(serializers.Serializer):
+    source_type = serializers.ChoiceField(
+        choices=["memory", "document", "transcript", "decision"]
+    )
+    id = serializers.UUIDField()
+    quote = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class GroupMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GroupChatMessage
+        fields = ["id", "thread", "role", "text", "citations", "not_found", "created_at"]
+
+
+class GroupChatViewSet(viewsets.ViewSet):
+    """Group Intelligence (spec §28–29). Same ask/answer shape as Meeting
+    Chat, but sources span the whole group — ACTIVE memory, documents,
+    transcripts, decisions — and every response carries the scope
+    indicator."""
+
+    def _group(self, request, group_pk):
+        group = (
+            Group.objects.visible_to(request.user)
+            .filter(deleted_at__isnull=True, pk=group_pk)
+            .select_related("workspace")
+            .first()
+        )
+        if group is None:
+            raise Http404
+        return group
+
+    def _thread(self, request, group, thread_id, create_title=""):
+        if thread_id:
+            thread = group.chat_threads.filter(pk=thread_id).first()
+            if thread is None:
+                raise ValidationError({"thread": "unknown thread for this group"})
+            return thread
+        return GroupChatThread.objects.create(
+            workspace=group.workspace,
+            group=group,
+            created_by=request.user,
+            title=create_title[:300],
+        )
+
+    def list(self, request, group_pk=None):
+        group = self._group(request, group_pk)
+        qs = GroupChatMessage.objects.filter(group=group)
+        if request.query_params.get("thread"):
+            qs = qs.filter(thread_id=request.query_params["thread"])
+        return Response(GroupMessageSerializer(qs, many=True).data)
+
+    def ask(self, request, group_pk=None):
+        group = self._group(request, group_pk)
+        member = group.members.filter(user=request.user).first()
+        if not member:
+            raise PermissionDenied("Not a member of this group.")
+        question = str(request.data.get("question", "")).strip()
+        if not question:
+            raise ValidationError({"question": "required"})
+        thread = self._thread(request, group, request.data.get("thread"), question)
+        sources = retrieve_group_sources(group, question)
+        msg = GroupChatMessage.objects.create(
+            workspace=group.workspace,
+            group=group,
+            thread=thread,
+            created_by=request.user,
+            role=GroupChatMessage.Role.USER,
+            text=question,
+            retrieved_sources=sources,
+        )
+        return Response(
+            {
+                "thread": str(thread.pk),
+                "message": str(msg.pk),
+                "scope": {"group": str(group.pk), "group_name": group.name},
+                "sources": sources,
+            }
+        )
+
+    def answer(self, request, group_pk=None):
+        group = self._group(request, group_pk)
+        thread = self._thread(request, group, request.data.get("thread"))
+        text = str(request.data.get("text", "")).strip()
+        not_found = bool(request.data.get("not_found", False))
+        if not text:
+            raise ValidationError({"text": "required"})
+        ser = GroupCitationSerializer(data=request.data.get("citations", []), many=True)
+        ser.is_valid(raise_exception=True)
+        valid = valid_group_citation_ids(group)
+        citations = []
+        for c in ser.validated_data:
+            if str(c["id"]) not in valid[c["source_type"]]:
+                raise ValidationError(
+                    {"citations": f"{c['source_type']} {c['id']} is not a citable source of this group (superseded/rejected memory is never citable as current)"}
+                )
+            citations.append(
+                {"source_type": c["source_type"], "id": str(c["id"]), "quote": c["quote"]}
+            )
+        if not not_found and not citations:
+            raise ValidationError(
+                {"citations": "an answer must cite this group's sources; if they do not contain the answer, set not_found=true"}
+            )
+        msg = GroupChatMessage.objects.create(
+            workspace=group.workspace,
+            group=group,
+            thread=thread,
+            created_by=request.user,
+            role=GroupChatMessage.Role.ASSISTANT,
+            text=text,
+            citations=citations,
+            not_found=not_found,
+        )
+        return Response(GroupMessageSerializer(msg).data)
