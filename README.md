@@ -79,6 +79,69 @@ into Settings.
 > LM Studio has a CORS toggle in its server settings. Transcription works on the demo
 > with no setup at all.
 
+## Scrivano 2.0 — optional self-hosted backend (`server/`)
+
+The SPA above is complete on its own. Scrivano 2.0 adds an **optional** multi-tenant
+backend (Django 6 + DRF + Supabase Postgres/pgvector/Auth) that turns meetings into
+searchable, cited organizational memory. The app shows a "Cloud workspace" panel once
+you point it at a server (sidebar → ☁); until then nothing changes.
+
+Design docs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
+[docs/DATA-MODEL.md](docs/DATA-MODEL.md) · [docs/MVP-PLAN.md](docs/MVP-PLAN.md).
+Prime rule: *the transcript determines what happened; approved Group Memory explains
+why it matters.* Every AI artifact the API accepts must cite real transcript
+segments; owners and deadlines are never invented; Meeting Chat retrieval is
+hard-scoped to one meeting; only approved/temporary memory influences answers.
+
+### Backend quick start
+
+```bash
+cd server
+python -m venv .venv && .venv/Scripts/activate   # or source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env    # fill in the variables below (SQLite works with none)
+python manage.py migrate
+python manage.py runserver
+```
+
+Environment variables (`server/.env`):
+
+```
+DATABASE_URL=postgres://…        # Supabase or local Postgres w/ pgvector; omit for SQLite
+SUPABASE_URL=…                   # Supabase project URL (auth + storage)
+SUPABASE_JWT_SECRET=…            # verifies user access tokens
+SUPABASE_SERVICE_KEY=…           # server-side storage signing only — never ship to a client
+DJANGO_SECRET_KEY=…              # required in production
+DJANGO_DEBUG=1                   # local only
+EMBEDDINGS_PROVIDER=ollama|mock  # "mock" is deterministic and clearly labeled
+EMBEDDINGS_URL=http://localhost:11434
+EMBEDDINGS_MODEL=nomic-embed-text
+```
+
+Backend tests (58, isolation-focused): `DATABASE_URL=sqlite:///db.sqlite3 python -m pytest`
+
+### API surface (all under `/api/`, Supabase JWT bearer auth)
+
+workspaces · groups (+ versioned context, documents) · meetings (+ idempotent
+`segments`, `finish`, `jobs`) · `meetings/{id}/intelligence` (cited summary/decisions/
+tasks/commitments/questions/risks with dedupe keys) · `meetings/{id}/chat` (strictly
+meeting-isolated RAG with citation validation and honest not-found) ·
+`meetings/{id}/memory-suggestions` + review/approve/conflict workflow ·
+`groups/{id}/chat` (Group Intelligence over active memory) · `tasks` · `search` ·
+`meetings/{id}/shares` + expiring external links (`/api/shared/{token}/`, external-safe
+summary only).
+
+### Security posture
+
+- Every query path goes through `visible_to` scoped managers — cross-workspace access
+  is structurally impossible and covered by tests, not filtered after the fact.
+- Citation validation server-side: artifacts and chat answers citing anything outside
+  their meeting/group are rejected with 400.
+- Production hardening (HSTS, secure cookies, DEBUG-off secret enforcement) activates
+  automatically when `DJANGO_DEBUG` is unset; DRF throttling is on by default.
+- External share links must carry an expiry and can be revoked; they serve a summary
+  variant that excludes group context.
+
 ## Testing
 
 ```bash
