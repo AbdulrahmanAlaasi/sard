@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "meetings",
     "intelligence",
     "chat",
+    "memory",
 ]
 
 MIDDLEWARE = [
