@@ -15,6 +15,11 @@ from memory.api import (
 )
 from intelligence.api import MeetingIntelligenceViewSet, TaskViewSet
 from meetings.api import MeetingViewSet
+from meetings.sharing_api import (
+    ExternalSharedMeetingView,
+    MeetingShareViewSet,
+    ShareRevokeViewSet,
+)
 from tenancy.api import WorkspaceViewSet
 from .search import SearchView
 
@@ -54,4 +59,10 @@ urlpatterns = [
     path("api/memory/<uuid:pk>/history/", MemoryHistoryViewSet.as_view({"get": "history"})),
     path("api/memory-conflicts/<uuid:pk>/resolve/", ConflictResolveViewSet.as_view({"post": "resolve"})),
     path("api/search/", SearchView.as_view()),
+    path(
+        "api/meetings/<uuid:meeting_pk>/shares/",
+        MeetingShareViewSet.as_view({"get": "list", "post": "create"}),
+    ),
+    path("api/shares/<uuid:pk>/revoke/", ShareRevokeViewSet.as_view({"post": "revoke"})),
+    path("api/shared/<uuid:token>/", ExternalSharedMeetingView.as_view()),
 ]

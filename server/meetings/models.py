@@ -1,4 +1,8 @@
+import uuid
+
+from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from groups.models import Group, Person
 from tenancy.models import WorkspaceScopedModel
@@ -133,3 +137,30 @@ class ProcessingJob(WorkspaceScopedModel):
         constraints = [
             models.UniqueConstraint(fields=["meeting", "stage"], name="uniq_meeting_stage")
         ]
+
+
+class MeetingShare(WorkspaceScopedModel):
+    """Basic sharing (spec §34): workspace-wide, to a specific user, or an
+    expiring external link. External viewers only ever see the external-safe
+    summary variant — Group context is excluded by default."""
+
+    class Scope(models.TextChoices):
+        WORKSPACE = "workspace"
+        USER = "user"
+        EXTERNAL_LINK = "external_link"
+
+    meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE, related_name="shares")
+    scope = models.CharField(max_length=16, choices=Scope.choices)
+    shared_with = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="meeting_shares",
+    )
+    token = models.UUIDField(default=uuid.uuid4, unique=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    @property
+    def is_valid(self) -> bool:
+        if self.revoked_at is not None:
+            return False
+        return self.expires_at is None or self.expires_at > timezone.now()
