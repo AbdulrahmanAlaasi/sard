@@ -90,7 +90,7 @@ export class CloudPanel {
       if (err instanceof ApiError && err.status === 401) {
         this.route = { page: 'signin' };
       } else {
-        this.deps.onToast(`Cloud error: ${err instanceof Error ? err.message : err}`);
+        this.deps.onToast(`Workspace error: ${err instanceof Error ? err.message : err}`);
       }
     }
     this.render();
@@ -105,7 +105,7 @@ export class CloudPanel {
         : '';
     return `<div class="cloud-header">
       <h2>${esc(title)}</h2>
-      <div class="cloud-nav">${nav}<button class="btn btn-ghost" data-act="close">Local mode ✕</button></div>
+      <div class="cloud-nav">${nav}<button class="btn btn-ghost" data-act="close">Back to meetings ✕</button></div>
     </div>`;
   }
 
@@ -113,24 +113,23 @@ export class CloudPanel {
     const c = this.deps.container;
     switch (this.route.page) {
       case 'setup':
-        c.innerHTML = `${this.header('Connect Sard Cloud')}
-          <p class="cloud-hint">Point Sard at your own backend. Transcription and AI stay local ,
-          the server stores transcripts, groups, and approved memory. Leave local mode any time.</p>
+        c.innerHTML = `${this.header('Connect your local workspace server')}
+          <p class="cloud-hint">Groups, approved memory, Meeting Chat, and search run against a
+          server on THIS machine. Start it with <code>cd server && python manage.py runserver</code>,
+          then continue. Nothing leaves your computer.</p>
           <form class="cloud-form" data-form="setup">
-            <label>API server URL<input name="apiUrl" placeholder="http://localhost:8000" required></label>
-            <label>Supabase URL<input name="supabaseUrl" placeholder="https://xyz.supabase.co" required></label>
-            <label>Supabase anon key<input name="supabaseAnonKey" required></label>
+            <label>Local server URL<input name="apiUrl" value="http://localhost:8000" required></label>
             <button class="btn btn-primary" type="submit">Save & continue</button>
           </form>`;
         break;
       case 'signin':
-        c.innerHTML = `${this.header('Sign in')}
+        c.innerHTML = `${this.header('Enter your workspace')}
+          <p class="cloud-hint">Your local server issues a private token for this email.
+          No password, no account, no cloud.</p>
           <form class="cloud-form" data-form="signin">
             <label>Email<input name="email" type="email" required autocomplete="email"></label>
-            <label>Password<input name="password" type="password" required minlength="8" autocomplete="current-password"></label>
             <div class="cloud-row">
-              <button class="btn btn-primary" type="submit">Sign in</button>
-              <button class="btn" type="button" data-act="signup">Create account</button>
+              <button class="btn btn-primary" type="submit">Enter workspace</button>
               <button class="btn btn-ghost" type="button" data-act="reconfig">Server settings</button>
             </div>
           </form>`;
@@ -163,7 +162,7 @@ export class CloudPanel {
         const groupOptions = this.groups
           .map((g) => `<option value="${g.id}">${esc(g.name)}</option>`)
           .join('');
-        c.innerHTML = `${this.header('Cloud workspace')}
+        c.innerHTML = `${this.header('Local workspace')}
           <section class="cloud-section">
             <h3>Groups</h3>
             <div class="cloud-cards">${groupCards || '<p class="cloud-hint">No groups yet.</p>'}</div>
@@ -175,7 +174,7 @@ export class CloudPanel {
           <section class="cloud-section">
             <h3>Meetings</h3>
             <table class="cloud-table"><tbody>${meetingRows || ''}</tbody></table>
-            ${meetingRows ? '' : '<p class="cloud-hint">No cloud meetings yet.</p>'}
+            ${meetingRows ? '' : '<p class="cloud-hint">No workspace meetings yet.</p>'}
             ${
               localOptions && groupOptions
                 ? `<form class="cloud-row" data-form="sync">
@@ -376,8 +375,6 @@ export class CloudPanel {
       if (kind === 'setup') {
         this.config = {
           apiUrl: String(data.get('apiUrl')).replace(/\/$/, ''),
-          supabaseUrl: String(data.get('supabaseUrl')).replace(/\/$/, ''),
-          supabaseAnonKey: String(data.get('supabaseAnonKey')),
         };
         saveCloudConfig(this.config);
         this.client = new ApiClient(this.config);
@@ -385,7 +382,7 @@ export class CloudPanel {
         if (this.route.page === 'dashboard') await this.loadDashboard();
         else this.render();
       } else if (kind === 'signin' && this.client) {
-        await this.client.signIn(String(data.get('email')), String(data.get('password')));
+        await this.client.signIn(String(data.get('email')), String(data.get('password') ?? ''));
         await this.loadDashboard();
       } else if (kind === 'new-group' && this.client && this.workspaceId) {
         await this.client.createGroup(this.workspaceId, String(data.get('name')));

@@ -21,6 +21,7 @@ import {
   searchMeetings,
 } from './shared/format';
 import type { Meeting, MeetingSource, Settings } from './shared/types';
+import { CloudPanel } from './cloud/ui';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
@@ -30,7 +31,8 @@ type View =
   | { kind: 'home' }
   | { kind: 'recording'; source: RecordingSource }
   | { kind: 'processing'; label: string; progress: number }
-  | { kind: 'meeting'; id: string; tab: 'notes' | 'transcript' };
+  | { kind: 'meeting'; id: string; tab: 'notes' | 'transcript' }
+  | { kind: 'workspace' };
 
 let meetings: Meeting[] = [];
 let settings: Settings;
@@ -87,6 +89,7 @@ function render() {
   const filtered = searchMeetings(meetings, searchQuery);
   const groups = groupMeetings(filtered);
 
+  const wasWorkspace = view.kind === 'workspace';
   app.innerHTML = `
     <div class="workspace">
       <aside class="sidebar">
@@ -121,6 +124,9 @@ function render() {
           }
         </nav>
         <div class="sidebar-foot">
+          <button type="button" class="ollama-pill" id="open-workspace" title="Groups, memory, and Meeting Chat via a server on this machine">
+            <span>🗂 Local workspace</span>
+          </button>
           <button type="button" class="ollama-pill" id="open-settings" title="Settings">
             <span class="status-dot ${provider.reachable ? 'dot-ok' : 'dot-off'}"></span>
             <span>${provider.reachable ? `${provider.label} · ${settings.llmModel || 'no model'}` : 'Local AI offline'}</span>
@@ -136,6 +142,7 @@ function render() {
     ${settingsOpen ? renderSettingsModal() : ''}
   `;
   wireEvents();
+  if (wasWorkspace) mountWorkspace();
 }
 
 function renderView(): string {
@@ -148,7 +155,27 @@ function renderView(): string {
       return renderProcessing();
     case 'meeting':
       return renderMeeting();
+    case 'workspace':
+      return `<div class="cloud-pane" id="cloud-root"></div>`;
   }
+}
+
+// Local workspace panel (groups, memory, Meeting Chat, search) served by a
+// Django server running on THIS machine (server/, LOCAL_AUTH mode).
+function mountWorkspace() {
+  const container = document.querySelector<HTMLElement>('#cloud-root');
+  if (!container) return;
+  const panel = new CloudPanel({
+    container,
+    getSettings: () => settings,
+    getLocalMeetings: () => meetings,
+    onToast: showToast,
+    onClose: () => {
+      view = { kind: 'home' };
+      render();
+    },
+  });
+  void panel.open();
 }
 
 function renderHome(): string {
@@ -540,6 +567,11 @@ function wireEvents() {
       view = { kind: 'meeting', id: btn.dataset.open!, tab: 'notes' };
       render();
     });
+  });
+
+  document.querySelector('#open-workspace')?.addEventListener('click', () => {
+    view = { kind: 'workspace' };
+    render();
   });
 
   document.querySelector('#open-settings')?.addEventListener('click', async () => {

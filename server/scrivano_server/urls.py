@@ -21,6 +21,7 @@ from meetings.sharing_api import (
     ShareRevokeViewSet,
 )
 from tenancy.api import WorkspaceViewSet
+from tenancy.local_auth import LocalSignInView
 from .search import SearchView
 
 router = DefaultRouter()
@@ -59,6 +60,7 @@ urlpatterns = [
     path("api/memory/<uuid:pk>/history/", MemoryHistoryViewSet.as_view({"get": "history"})),
     path("api/memory-conflicts/<uuid:pk>/resolve/", ConflictResolveViewSet.as_view({"post": "resolve"})),
     path("api/search/", SearchView.as_view()),
+    path("api/auth/local/", LocalSignInView.as_view()),
     path(
         "api/meetings/<uuid:meeting_pk>/shares/",
         MeetingShareViewSet.as_view({"get": "list", "post": "create"}),

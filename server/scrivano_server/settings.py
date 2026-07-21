@@ -37,6 +37,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "scrivano_server.cors.LocalCorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -120,6 +121,21 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+
+# Local-only mode (the default): the server issues and verifies its own
+# tokens, so groups/memory/chat/search run with zero cloud accounts.
+LOCAL_AUTH = os.environ.get("LOCAL_AUTH", "1" if DEBUG else "0") == "1"
+if not SUPABASE_JWT_SECRET and LOCAL_AUTH:
+    SUPABASE_JWT_SECRET = SECRET_KEY
+
+# Browser origins allowed to call this API (the local Vite servers).
+CORS_ALLOWED_ORIGINS = [
+    o for o in os.environ.get(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://localhost:4180",
+    ).split(",")
+    if o
+]
 
 # AI provider registry (docs/ARCHITECTURE.md §2). "mock" is clearly labeled
 # in every API response that used it and is never presented as real output.

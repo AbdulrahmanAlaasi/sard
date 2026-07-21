@@ -103,7 +103,7 @@ python -m venv .venv && .venv/Scripts/activate   # or source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env    # fill in the variables below (SQLite works with none)
 python manage.py migrate
-python manage.py runserver
+python manage.py runserver   # LOCAL_AUTH is on by default: the app signs in with just an email, fully offline
 ```
 
 Environment variables (`server/.env`):

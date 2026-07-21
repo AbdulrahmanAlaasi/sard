@@ -9,9 +9,11 @@
 import type { TranscriptSegment } from '../shared/types';
 
 export interface CloudConfig {
-  apiUrl: string; // Django API origin, e.g. https://api.scrivano.alaasi.dev
-  supabaseUrl: string;
-  supabaseAnonKey: string;
+  apiUrl: string; // local Django server, e.g. http://localhost:8000
+  // Optional: only for self-hosters using real Supabase auth instead of
+  // the server's built-in local sign-in.
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
 }
 
 export interface SessionTokens {
@@ -148,7 +150,25 @@ export class ApiClient {
     return this.session !== null;
   }
 
+  /** Password-less sign-in against the LOCAL server (LOCAL_AUTH mode). */
+  async localSignIn(email: string): Promise<void> {
+    const resp = await fetch(`${this.config.apiUrl}/api/auth/local/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new ApiError(resp.status, data.detail || 'Local sign-in failed. Is the server running with LOCAL_AUTH?');
+    }
+    this.session = { accessToken: data.access_token, refreshToken: '', email: data.email };
+    saveSession(this.session);
+  }
+
   async signIn(email: string, password: string): Promise<void> {
+    if (!this.config.supabaseUrl || !this.config.supabaseAnonKey) {
+      return this.localSignIn(email);
+    }
     const resp = await fetch(
       `${this.config.supabaseUrl}/auth/v1/token?grant_type=password`,
       {
@@ -173,6 +193,10 @@ export class ApiClient {
   }
 
   async signUp(email: string, password: string): Promise<{ needsConfirmation: boolean }> {
+    if (!this.config.supabaseUrl || !this.config.supabaseAnonKey) {
+      await this.localSignIn(email);
+      return { needsConfirmation: false };
+    }
     const resp = await fetch(`${this.config.supabaseUrl}/auth/v1/signup`, {
       method: 'POST',
       headers: {
@@ -199,7 +223,8 @@ export class ApiClient {
   }
 
   private async refresh(): Promise<boolean> {
-    if (!this.session) return false;
+    if (!this.session || !this.session.refreshToken) return false;
+    if (!this.config.supabaseUrl || !this.config.supabaseAnonKey) return false;
     const resp = await fetch(
       `${this.config.supabaseUrl}/auth/v1/token?grant_type=refresh_token`,
       {
