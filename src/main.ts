@@ -1,5 +1,14 @@
 import './style.css';
-import { deleteMeeting, listMeetings, loadSettings, saveMeeting, saveSettings } from './lib/db';
+import {
+  deleteGroup,
+  deleteMeeting,
+  listGroups,
+  listMeetings,
+  loadSettings,
+  saveGroup,
+  saveMeeting,
+  saveSettings,
+} from './lib/db';
 import { detectProvider, generate, type ProviderInfo } from './lib/llm';
 import { startRecording, type RecorderHandle, type RecordingSource } from './lib/recorder';
 import { transcribe, type TranscribeProgress } from './lib/transcriber';
@@ -20,21 +29,31 @@ import {
   newMeetingId,
   searchMeetings,
 } from './shared/format';
-import type { Meeting, MeetingSource, Settings } from './shared/types';
-import { CloudPanel } from './cloud/ui';
+import type { ChatMessage, Group, Meeting, MeetingSource, Settings } from './shared/types';
+import {
+  buildGroupPrompt,
+  buildMeetingPrompt,
+  groupMemory,
+  resolveAnswer,
+  retrieveGroupExcerpts,
+  retrieveMeetingExcerpts,
+} from './lib/rag';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
 // ---------- state ----------
 
+type MeetingTab = 'notes' | 'transcript' | 'chat';
+
 type View =
   | { kind: 'home' }
   | { kind: 'recording'; source: RecordingSource }
   | { kind: 'processing'; label: string; progress: number }
-  | { kind: 'meeting'; id: string; tab: 'notes' | 'transcript' }
-  | { kind: 'workspace' };
+  | { kind: 'meeting'; id: string; tab: MeetingTab }
+  | { kind: 'group'; id: string };
 
 let meetings: Meeting[] = [];
+let groups: Group[] = [];
 let settings: Settings;
 let provider: ProviderInfo = { reachable: false, kind: 'ollama', url: '', label: 'Local AI', models: [] };
 let view: View = { kind: 'home' };
@@ -43,6 +62,7 @@ let recorder: RecorderHandle | null = null;
 let recordTimer: number | null = null;
 let settingsOpen = false;
 let generating = false;
+let chatBusy = false;
 
 // ---------- helpers ----------
 
@@ -67,6 +87,21 @@ function showToast(message: string) {
 
 async function refreshMeetings() {
   meetings = await listMeetings();
+  groups = await listGroups();
+}
+
+function currentGroup(): Group | null {
+  const v = view;
+  if (v.kind !== 'group') return null;
+  return groups.find((g) => g.id === v.id) ?? null;
+}
+
+function meetingsInGroup(groupId: string): Meeting[] {
+  return meetings.filter((m) => m.groupId === groupId);
+}
+
+function newId(): string {
+  return (crypto.randomUUID?.() ?? String(Date.now() + Math.random())).replace(/-/g, '').slice(0, 16);
 }
 
 async function refreshProvider() {
@@ -87,9 +122,8 @@ function currentMeeting(): Meeting | null {
 
 function render() {
   const filtered = searchMeetings(meetings, searchQuery);
-  const groups = groupMeetings(filtered);
-
-  const wasWorkspace = view.kind === 'workspace';
+  const dateGroups = groupMeetings(filtered);
+  const v = view; // const so it narrows inside .map() closures below
   app.innerHTML = `
     <div class="workspace">
       <aside class="sidebar">
@@ -100,21 +134,40 @@ function render() {
         </div>
         <button type="button" class="btn btn-primary btn-full" id="new-meeting">+ New meeting</button>
         <input type="search" class="sidebar-search" id="search" placeholder="Search meetings…" value="${escapeHtml(searchQuery)}" aria-label="Search meetings" />
-        <nav class="meeting-nav" aria-label="Meetings">
+        <nav class="meeting-nav" aria-label="Meetings and groups">
+          <div class="nav-group">
+            <div class="nav-group-head">
+              <span class="nav-group-label">Groups</span>
+              <button type="button" class="nav-add" id="new-group" title="New group" aria-label="New group">+</button>
+            </div>
+            ${
+              groups.length === 0
+                ? `<p class="nav-empty nav-empty-sm">No groups yet.</p>`
+                : groups
+                    .map(
+                      (g) => `
+                  <button type="button" class="nav-item ${v.kind === 'group' && v.id === g.id ? 'active' : ''}" data-group="${g.id}">
+                    <span class="nav-item-title">🗂 ${escapeHtml(g.name)}</span>
+                    <span class="nav-item-meta">${meetingsInGroup(g.id).length} meeting${meetingsInGroup(g.id).length === 1 ? '' : 's'}</span>
+                  </button>`
+                    )
+                    .join('')
+            }
+          </div>
           ${
             filtered.length === 0
               ? `<p class="nav-empty">${meetings.length === 0 ? 'No meetings yet.' : 'No matches.'}</p>`
-              : [...groups.entries()]
+              : [...dateGroups.entries()]
                   .map(
-                    ([group, items]) => `
+                    ([label, items]) => `
                 <div class="nav-group">
-                  <span class="nav-group-label">${group}</span>
+                  <span class="nav-group-label">${label}</span>
                   ${items
                     .map(
                       (m) => `
-                    <button type="button" class="nav-item ${view.kind === 'meeting' && view.id === m.id ? 'active' : ''}" data-open="${m.id}">
+                    <button type="button" class="nav-item ${v.kind === 'meeting' && v.id === m.id ? 'active' : ''}" data-open="${m.id}">
                       <span class="nav-item-title">${escapeHtml(m.title)}</span>
-                      <span class="nav-item-meta">${formatDuration(m.durationSec)}${m.notes ? ' · ✦ notes' : ''}</span>
+                      <span class="nav-item-meta">${formatDuration(m.durationSec)}${m.notes ? ' · ✦ notes' : ''}${m.chat?.length ? ' · 💬' : ''}</span>
                     </button>`
                     )
                     .join('')}
@@ -124,9 +177,6 @@ function render() {
           }
         </nav>
         <div class="sidebar-foot">
-          <button type="button" class="ollama-pill" id="open-workspace" title="Groups, memory, and Meeting Chat via a server on this machine">
-            <span>🗂 Local workspace</span>
-          </button>
           <button type="button" class="ollama-pill" id="open-settings" title="Settings">
             <span class="status-dot ${provider.reachable ? 'dot-ok' : 'dot-off'}"></span>
             <span>${provider.reachable ? `${provider.label} · ${settings.llmModel || 'no model'}` : 'Local AI offline'}</span>
@@ -142,7 +192,6 @@ function render() {
     ${settingsOpen ? renderSettingsModal() : ''}
   `;
   wireEvents();
-  if (wasWorkspace) mountWorkspace();
 }
 
 function renderView(): string {
@@ -155,27 +204,9 @@ function renderView(): string {
       return renderProcessing();
     case 'meeting':
       return renderMeeting();
-    case 'workspace':
-      return `<div class="cloud-pane" id="cloud-root"></div>`;
+    case 'group':
+      return renderGroup();
   }
-}
-
-// Local workspace panel (groups, memory, Meeting Chat, search) served by a
-// Django server running on THIS machine (server/, LOCAL_AUTH mode).
-function mountWorkspace() {
-  const container = document.querySelector<HTMLElement>('#cloud-root');
-  if (!container) return;
-  const panel = new CloudPanel({
-    container,
-    getSettings: () => settings,
-    getLocalMeetings: () => meetings,
-    onToast: showToast,
-    onClose: () => {
-      view = { kind: 'home' };
-      render();
-    },
-  });
-  void panel.open();
 }
 
 function renderHome(): string {
@@ -269,6 +300,14 @@ function renderMeeting(): string {
           <span>${m.source === 'pasted' ? 'pasted transcript' : m.source.replace('-', ' ')}</span>
         </div>
         <div class="meeting-actions">
+          <label class="group-assign">
+            <span class="group-assign-label">Group</span>
+            <select id="assign-group" aria-label="Assign meeting to a group">
+              <option value="">None</option>
+              ${groups.map((g) => `<option value="${g.id}" ${m.groupId === g.id ? 'selected' : ''}>${escapeHtml(g.name)}</option>`).join('')}
+              <option value="__new__">+ New group…</option>
+            </select>
+          </label>
           <button type="button" class="btn btn-secondary btn-sm" id="copy-md">Copy Markdown</button>
           <button type="button" class="btn btn-secondary btn-sm" id="download-md">Export .md</button>
           <button type="button" class="btn btn-ghost btn-sm" id="delete-meeting">Delete</button>
@@ -278,9 +317,102 @@ function renderMeeting(): string {
       <div class="tabs" role="tablist">
         <button type="button" class="tab ${tab === 'notes' ? 'active' : ''}" data-tab="notes" role="tab">✦ AI Notes</button>
         <button type="button" class="tab ${tab === 'transcript' ? 'active' : ''}" data-tab="transcript" role="tab">Transcript</button>
+        <button type="button" class="tab ${tab === 'chat' ? 'active' : ''}" data-tab="chat" role="tab">💬 Chat</button>
       </div>
 
-      ${tab === 'notes' ? renderNotesTab(m) : renderTranscriptTab(m)}
+      ${tab === 'notes' ? renderNotesTab(m) : tab === 'transcript' ? renderTranscriptTab(m) : renderChatTab(m)}
+    </div>
+  `;
+}
+
+// Renders one chat thread (used by both meeting and group chat).
+function renderChatThread(messages: ChatMessage[], placeholder: string, emptyHint: string): string {
+  const log = messages
+    .map((msg) => {
+      if (msg.role === 'user') {
+        return `<div class="chat-msg chat-user"><p>${escapeHtml(msg.text)}</p></div>`;
+      }
+      const cites = msg.notFound
+        ? `<span class="pill pill-warn">not in the transcript</span>`
+        : msg.citations
+            .map(
+              (c) =>
+                `<span class="cite-chip" title="${escapeHtml(c.quote)}">${c.meetingTitle ? `${escapeHtml(c.meetingTitle)} ` : ''}${escapeHtml(c.time ?? '')} [${c.label}]</span>`
+            )
+            .join(' ');
+      return `<div class="chat-msg chat-assistant"><p>${escapeHtml(msg.text)}</p><div class="chat-cites">${cites}</div></div>`;
+    })
+    .join('');
+  return `
+    <p class="chat-hint">${escapeHtml(emptyHint)}</p>
+    <div class="chat-log" id="chat-log">${log || '<p class="cloud-hint" style="text-align:center">Ask your first question below.</p>'}</div>
+    <form class="chat-form" id="chat-form">
+      <input name="q" id="chat-input" placeholder="${escapeHtml(placeholder)}" autocomplete="off" ${chatBusy || !provider.reachable ? 'disabled' : ''} />
+      <button type="submit" class="btn btn-primary" ${chatBusy || !provider.reachable ? 'disabled' : ''}>${chatBusy ? 'Thinking…' : 'Ask'}</button>
+    </form>
+    ${provider.reachable ? '' : '<p class="cloud-hint">Start your local AI (Ollama, LM Studio, Jan) to use Chat. Detected models power the answers.</p>'}
+  `;
+}
+
+function renderChatTab(m: Meeting): string {
+  if (m.segments.length === 0) {
+    return `<div class="notes-empty"><p>No transcript to chat with yet.</p></div>`;
+  }
+  return `<div class="chat">${renderChatThread(
+    m.chat ?? [],
+    'Ask about this meeting…',
+    'Answers come from your local AI over this meeting’s transcript only. If it is not in the transcript, Sard says so.'
+  )}</div>`;
+}
+
+function renderGroup(): string {
+  const g = currentGroup();
+  if (!g) return `<div class="home"><h1>Group not found</h1></div>`;
+  const gm = meetingsInGroup(g.id);
+  const memory = groupMemory(gm);
+  return `
+    <div class="meeting">
+      <div class="meeting-head">
+        <input class="title-input" id="group-title-input" value="${escapeHtml(g.name)}" aria-label="Group name" maxlength="120" />
+        <div class="meeting-meta">
+          <span>🗂 Group</span><span>·</span><span>${gm.length} meeting${gm.length === 1 ? '' : 's'}</span>
+          <span>·</span><span>${memory.length} fact${memory.length === 1 ? '' : 's'} in memory</span>
+        </div>
+        <div class="meeting-actions">
+          <button type="button" class="btn btn-ghost btn-sm" id="delete-group">Delete group</button>
+        </div>
+      </div>
+
+      <div class="group-body">
+        <section class="note-block">
+          <h3>Meetings in this group</h3>
+          ${
+            gm.length === 0
+              ? '<p class="cloud-hint">Open a meeting and set its Group to add it here.</p>'
+              : `<ul class="group-meetings">${gm
+                  .map((m) => `<li><button type="button" class="btn btn-link" data-open="${m.id}">${escapeHtml(m.title)}</button> <span class="nav-item-meta">${m.notes ? '✦ notes' : 'no notes yet'}</span></li>`)
+                  .join('')}</ul>`
+          }
+        </section>
+
+        <section class="note-block">
+          <h3>Group memory <span class="cloud-hint" style="font-weight:400">derived from your notes</span></h3>
+          ${
+            memory.length === 0
+              ? '<p class="cloud-hint">Generate AI notes on the meetings above, and their decisions and key points collect here.</p>'
+              : `<ul>${memory.map((f) => `<li>${escapeHtml(f.statement)} <span class="cite-chip">${escapeHtml(f.meetingTitle)}</span></li>`).join('')}</ul>`
+          }
+        </section>
+
+        <section class="note-block">
+          <h3>Ask across this group</h3>
+          <div class="chat">${renderChatThread(
+            g.chat ?? [],
+            'Ask across every meeting in this group…',
+            'Answers draw on all transcripts and facts in this group, cited to the meeting they came from.'
+          )}</div>
+        </section>
+      </div>
     </div>
   `;
 }
@@ -544,6 +676,82 @@ async function generateNotes(meetingId: string) {
   }
 }
 
+// ---------- chat + groups ----------
+
+function activeModel(): string {
+  return (settings.llmModel || provider.models[0] || '').trim();
+}
+
+async function askMeetingChat(meetingId: string, question: string) {
+  const meeting = meetings.find((m) => m.id === meetingId);
+  if (!meeting || chatBusy) return;
+  const model = activeModel();
+  if (!provider.reachable || !model) {
+    showToast('Start your local AI first (Ollama, LM Studio, Jan).');
+    return;
+  }
+  meeting.chat = meeting.chat ?? [];
+  meeting.chat.push({ id: newId(), role: 'user', text: question, citations: [], notFound: false, at: new Date().toISOString() });
+  chatBusy = true;
+  render();
+  try {
+    const excerpts = retrieveMeetingExcerpts(meeting, question);
+    const raw = await generate(provider, model, buildMeetingPrompt(question, excerpts));
+    const result = resolveAnswer(raw, excerpts, 'This meeting’s transcript does not contain that information.');
+    meeting.chat.push({ id: newId(), role: 'assistant', text: result.text, citations: result.citations, notFound: result.notFound, at: new Date().toISOString() });
+    await saveMeeting(meeting);
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : 'Local AI request failed.');
+  } finally {
+    chatBusy = false;
+    render();
+    scrollChatToEnd();
+  }
+}
+
+async function askGroupChat(groupId: string, question: string) {
+  const group = groups.find((g) => g.id === groupId);
+  if (!group || chatBusy) return;
+  const model = activeModel();
+  if (!provider.reachable || !model) {
+    showToast('Start your local AI first (Ollama, LM Studio, Jan).');
+    return;
+  }
+  group.chat = group.chat ?? [];
+  group.chat.push({ id: newId(), role: 'user', text: question, citations: [], notFound: false, at: new Date().toISOString() });
+  chatBusy = true;
+  render();
+  try {
+    const gm = meetingsInGroup(groupId);
+    const excerpts = retrieveGroupExcerpts(gm, question);
+    const memory = groupMemory(gm).map((f) => `${f.statement} (${f.meetingTitle})`);
+    const raw = await generate(provider, model, buildGroupPrompt(question, excerpts, memory));
+    const result = resolveAnswer(raw, excerpts, 'No meeting in this group covers that.');
+    group.chat.push({ id: newId(), role: 'assistant', text: result.text, citations: result.citations, notFound: result.notFound, at: new Date().toISOString() });
+    await saveGroup(group);
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : 'Local AI request failed.');
+  } finally {
+    chatBusy = false;
+    render();
+    scrollChatToEnd();
+  }
+}
+
+function scrollChatToEnd() {
+  const log = document.querySelector('#chat-log');
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+async function createGroup(name: string): Promise<Group | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const group: Group = { id: newId(), name: trimmed, createdAt: new Date().toISOString() };
+  await saveGroup(group);
+  await refreshMeetings();
+  return group;
+}
+
 // ---------- events ----------
 
 function wireEvents() {
@@ -569,9 +777,21 @@ function wireEvents() {
     });
   });
 
-  document.querySelector('#open-workspace')?.addEventListener('click', () => {
-    view = { kind: 'workspace' };
-    render();
+  document.querySelectorAll<HTMLButtonElement>('[data-group]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      view = { kind: 'group', id: btn.dataset.group! };
+      render();
+    });
+  });
+
+  document.querySelector('#new-group')?.addEventListener('click', async () => {
+    const name = prompt('New group name');
+    if (name === null) return;
+    const g = await createGroup(name);
+    if (g) {
+      view = { kind: 'group', id: g.id };
+      render();
+    }
   });
 
   document.querySelector('#open-settings')?.addEventListener('click', async () => {
@@ -660,10 +880,63 @@ function wireEvents() {
   document.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (view.kind === 'meeting') {
-        view = { ...view, tab: btn.dataset.tab as 'notes' | 'transcript' };
+        view = { ...view, tab: btn.dataset.tab as MeetingTab };
         render();
       }
     });
+  });
+
+  // Assign the current meeting to a group (or create one inline).
+  document.querySelector<HTMLSelectElement>('#assign-group')?.addEventListener('change', async (e) => {
+    const sel = e.target as HTMLSelectElement;
+    const m = currentMeeting();
+    if (!m) return;
+    if (sel.value === '__new__') {
+      const name = prompt('New group name');
+      const g = name ? await createGroup(name) : null;
+      m.groupId = g ? g.id : (m.groupId ?? null);
+    } else {
+      m.groupId = sel.value || null;
+    }
+    await saveMeeting(m);
+    await refreshMeetings();
+    render();
+  });
+
+  // Chat form (works for both meeting and group chat).
+  document.querySelector('#chat-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = document.querySelector<HTMLInputElement>('#chat-input');
+    const q = input?.value.trim() ?? '';
+    if (!q) return;
+    if (view.kind === 'meeting') void askMeetingChat(view.id, q);
+    else if (view.kind === 'group') void askGroupChat(view.id, q);
+  });
+
+  // Group view controls.
+  const groupTitle = document.querySelector<HTMLInputElement>('#group-title-input');
+  groupTitle?.addEventListener('change', async () => {
+    const g = currentGroup();
+    if (!g) return;
+    g.name = groupTitle.value.trim() || 'Untitled group';
+    await saveGroup(g);
+    await refreshMeetings();
+    render();
+  });
+
+  document.querySelector('#delete-group')?.addEventListener('click', async () => {
+    const g = currentGroup();
+    if (!g) return;
+    if (!confirm(`Delete group "${g.name}"? Meetings stay, they are just ungrouped.`)) return;
+    for (const m of meetingsInGroup(g.id)) {
+      m.groupId = null;
+      await saveMeeting(m);
+    }
+    await deleteGroup(g.id);
+    await refreshMeetings();
+    view = { kind: 'home' };
+    render();
+    showToast('Group deleted');
   });
 
   document.querySelector('#generate-notes')?.addEventListener('click', () => {

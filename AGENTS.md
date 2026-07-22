@@ -23,9 +23,11 @@ the agent MUST update this AGENTS.md within the same task.
   notetaker that runs **100% locally**. Formerly named Scrivano; the rename is
   complete and the old name must not appear in new user-visible text.
 - **Purpose:** record or import a meeting, transcribe it on-device with Whisper,
-  and have the user's own local LLM write structured, honest notes. An optional
-  local Django server adds groups, versioned context, approved memory, strictly
-  isolated Meeting Chat RAG, Group Intelligence, search, and sharing.
+  and have the user's own local LLM write structured, honest notes, answer
+  questions about the meeting (Chat/RAG), and organize meetings into groups with
+  a cross-meeting group chat and derived memory. ALL of this runs in the browser
+  against the user's local Ollama; there is no server in the shipped product.
+  The `server/` Django app is optional legacy for multi-user self-hosting only.
 - **Business goal:** free, open-source, reputation-building product. There is
   **no paid tier**; never add pricing, billing, upsells, or "founding access"
   language anywhere (an earlier SaaS plan was deliberately removed by the owner).
@@ -47,10 +49,10 @@ the agent MUST update this AGENTS.md within the same task.
 | Path | Purpose | Belongs there | Never put there |
 |---|---|---|---|
 | `src/` | The SPA. Entry `main.ts` (state + render + events), `style.css` (whole design system) | UI logic, brand CSS | Server code, secrets |
-| `src/lib/` | Browser services: `db.ts` (IndexedDB), `llm.ts` (local LLM detection/generation), `recorder.ts`, `transcriber.ts` (Whisper + dtype fallback), `api.ts` (typed client for the local server) | One capability per file, pure helpers exported for tests | React/framework code, UI rendering |
-| `src/shared/` | Pure, DOM-free logic: `notesEngine.ts` (prompts/parsing), `format.ts`, `types.ts` | Deterministic functions with unit tests | fetch/DOM/IndexedDB access |
-| `src/cloud/` | `ui.ts`: the Local Workspace panel (groups, memory review, Meeting Chat, search) rendered into `#cloud-root` | Workspace UI only | Direct fetch calls (go through `api.ts`) |
-| `server/` | Django project `scrivano_server` + apps `tenancy`, `groups`, `meetings`, `intelligence`, `chat`, `memory` | Models, DRF viewsets, per-app `test_*.py` | Frontend assets, credentials |
+| `src/lib/` | Browser services: `db.ts` (IndexedDB: meetings, groups, settings), `llm.ts` (local LLM detection/generation), `recorder.ts`, `transcriber.ts` (Whisper + dtype fallback), `rag.ts` (in-browser retrieval + prompts + citation validation for Chat and Group Chat). `api.ts` is LEGACY (server client, unused by the app) | One capability per file, pure helpers exported for tests | React/framework code, UI rendering |
+| `src/shared/` | Pure, DOM-free logic: `notesEngine.ts` (prompts/parsing), `format.ts`, `types.ts` (Meeting, Group, ChatMessage, Citation) | Deterministic functions with unit tests | fetch/DOM/IndexedDB access |
+| `src/cloud/` | LEGACY `ui.ts`: the old server-backed workspace panel. NOT imported by the app anymore; kept for reference. Do not wire it back without owner approval | nothing new | new features (build them in the browser instead) |
+| `server/` | LEGACY optional Django backend (`scrivano_server` + apps `tenancy`, `groups`, `meetings`, `intelligence`, `chat`, `memory`) for multi-user self-hosting. The shipped app never calls it | Models, DRF viewsets, per-app `test_*.py` | Frontend assets, credentials |
 | `public/` | Static assets copied verbatim by Vite: `favicon.svg` (the brand mark), `landing.html` | Static files only | Anything imported by TS |
 | `docs/` | `ARCHITECTURE.md`, `DATA-MODEL.md`, `MVP-PLAN.md`, `BRAND.md`, `MARKETING.md` | Design/brand/marketing docs | Code |
 | `marketing/carousel/` | Six 1200×750 brand slides (`.html` sources + captured `.png`) | Marketing visuals | App code |
@@ -61,11 +63,21 @@ Ownership: single maintainer, Abdulrahman Alaasi (GitHub `AbdulrahmanAlaasi`).
 
 ## Architecture
 
-- **Style:** local-first SPA + optional local API server. Two independently
-  useful halves; the SPA must never require the server.
-- **Frontend layering:** `shared/` (pure) ← `lib/` (browser services) ←
-  `main.ts` / `cloud/ui.ts` (state + rendering). Dependencies point inward only;
-  `shared/` imports nothing from `lib/` or UI.
+- **Style:** local-first SPA. The entire product (capture, transcription, notes,
+  Chat/RAG, groups, group memory) runs in the browser. The server is legacy and
+  the SPA must never require it.
+- **In-browser RAG (`src/lib/rag.ts`):** lexical retrieval (token overlap +
+  phrase bonus) over a meeting's transcript units (long blocks split into
+  sentences), or across a group's meetings (each excerpt tagged with its source
+  meeting). Prompts demand `[n]` citations and `NOT_FOUND` honesty; `main.ts`
+  generates via `lib/llm.ts` (Ollama etc.), then `resolveAnswer` enforces the
+  rule: no valid citation means not-found (never an invented claim). Group
+  "memory" is derived from the decisions + key points already in each meeting's
+  notes, with no approval queue.
+- **Frontend layering:** `shared/` (pure) ← `lib/` (browser services incl. rag) ←
+  `main.ts` (state + rendering). Dependencies point inward only; `shared/`
+  imports nothing from `lib/` or UI. `main.ts` persists chat history on the
+  Meeting/Group records in IndexedDB.
 - **Rendering model:** no framework. A single `view` discriminated union, one
   `render()` that rewrites `#app` innerHTML, then `wireEvents()` re-binds.
   All dynamic text goes through `escapeHtml`/`esc`. Follow this pattern; do not
@@ -245,9 +257,9 @@ authority. Key tokens:
   `DATABASE_URL=sqlite:///db.sqlite3 python -m pytest` from `server/`.
   Current count: 60. New features require tests in the same commit.
 - **Frontend:** Vitest, colocated `*.test.ts` next to the module, covering the
-  pure logic (`shared/`, `lib/api.ts` helpers, `lib/llm.ts` parsing). Current
-  count: 55. DOM rendering is verified manually/by browser drive, not unit
-  tests.
+  pure logic (`shared/`, `lib/rag.ts` retrieval/citations, `lib/llm.ts` parsing).
+  Current count: 65. DOM rendering (Chat tab, groups) is verified by driving the
+  built app in a browser against a real local Ollama, not unit tests.
 - Isolation tests are sacred: never weaken or delete a test that asserts
   meeting/workspace/memory-status scoping.
 - Coverage: no numeric gate. TODO: set thresholds if the owner wants them.

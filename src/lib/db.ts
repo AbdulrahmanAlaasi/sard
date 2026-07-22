@@ -1,8 +1,8 @@
-import type { Meeting, Settings } from '../shared/types';
+import type { Group, Meeting, Settings } from '../shared/types';
 import { migrateSettings } from '../shared/types';
 
 const DB_NAME = 'scrivano';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -17,6 +17,10 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings');
+      }
+      // v2: local groups (organization + cross-meeting chat/memory).
+      if (!db.objectStoreNames.contains('groups')) {
+        db.createObjectStore('groups', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -65,6 +69,31 @@ export async function deleteMeeting(id: string): Promise<void> {
   const db = await openDb();
   const tx = db.transaction('meetings', 'readwrite');
   tx.objectStore('meetings').delete(id);
+  await txDone(tx);
+}
+
+export async function listGroups(): Promise<Group[]> {
+  const db = await openDb();
+  const tx = db.transaction('groups', 'readonly');
+  const store = tx.objectStore('groups');
+  return new Promise((resolve, reject) => {
+    const req = store.getAll();
+    req.onsuccess = () => resolve((req.result as Group[]) ?? []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function saveGroup(group: Group): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction('groups', 'readwrite');
+  tx.objectStore('groups').put(group);
+  await txDone(tx);
+}
+
+export async function deleteGroup(id: string): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction('groups', 'readwrite');
+  tx.objectStore('groups').delete(id);
   await txDone(tx);
 }
 

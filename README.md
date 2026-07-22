@@ -81,13 +81,16 @@ into Settings.
 
 ## Sard 2.0 — optional self-hosted backend (`server/`)
 
-The SPA above is complete on its own. Sard 2.0 adds an **optional** backend that
-turns meetings into searchable, cited organizational memory: groups, approved
-memory, strictly isolated Meeting Chat, and search. It runs on YOUR machine too:
-start it with the commands below and click **🗂 Local workspace** in the app's
-sidebar. In local mode (`LOCAL_AUTH`, the default) you sign in with just an
-email; the server issues its own private token and nothing touches the cloud.
-Self-hosters can instead wire real Supabase auth + Postgres/pgvector.
+**You do not need this server.** As of the latest version, Meeting Chat (RAG),
+groups, and group memory all run **directly in the browser** against your local
+Ollama, with zero setup: open any meeting and use the **💬 Chat** tab, create a
+**Group** in the sidebar, assign meetings to it, and ask across the group. It is
+all stored in your browser (IndexedDB) and cited to the transcript. No server,
+no login, no account.
+
+The `server/` folder is an **optional, legacy** Django backend kept only for
+people who want a shared multi-user deployment (real Supabase auth +
+Postgres/pgvector). The shipped single-user app never talks to it.
 
 Design docs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
 [docs/DATA-MODEL.md](docs/DATA-MODEL.md) · [docs/MVP-PLAN.md](docs/MVP-PLAN.md).

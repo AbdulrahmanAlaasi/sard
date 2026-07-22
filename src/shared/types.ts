@@ -22,6 +22,24 @@ export interface AiNotes {
 
 export type MeetingSource = 'microphone' | 'tab-audio' | 'upload' | 'pasted';
 
+/** One cited source behind a chat answer. `label` is the [n] marker number. */
+export interface Citation {
+  label: number;
+  quote: string;
+  time?: string; // mm:ss within the source meeting
+  meetingId?: string; // set for group chat, so answers point back to a meeting
+  meetingTitle?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  citations: Citation[];
+  notFound: boolean;
+  at: string; // ISO
+}
+
 export interface Meeting {
   id: string;
   title: string;
@@ -30,6 +48,17 @@ export interface Meeting {
   source: MeetingSource;
   segments: TranscriptSegment[];
   notes: AiNotes | null;
+  groupId?: string | null; // optional local grouping
+  chat?: ChatMessage[]; // per-meeting RAG chat history
+}
+
+/** A local group: organizes meetings and enables cross-meeting chat + memory.
+ * Everything lives in the browser; there is no server and no account. */
+export interface Group {
+  id: string;
+  name: string;
+  createdAt: string; // ISO
+  chat?: ChatMessage[]; // group-level chat history
 }
 
 export interface Settings {
